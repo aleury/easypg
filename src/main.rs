@@ -1,9 +1,7 @@
+mod compression;
 mod providers;
 
-use std::{
-    fs::File,
-    io::{self, BufReader, BufWriter, Read, Write},
-};
+use std::{fs::File, io};
 
 use clap::{Parser, Subcommand, ValueEnum};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -48,16 +46,10 @@ fn main() -> io::Result<()> {
         .expect("failed to get latest backup");
     println!("Copied latest backup to {:?}", backup);
 
-    let backup_file = File::open(&backup)?;
-    let backup_file_size = backup_file.metadata()?.len();
-    let mut backup_reader = BufReader::new(backup_file);
-
-    let decompressed_filepath = backup.trim_end_matches(".gz");
-    let decompressed_file = File::create(decompressed_filepath)?;
-    let mut file_writer = BufWriter::new(decompressed_file);
-    let mut decompressed_file_writer = flate2::write::GzDecoder::new(&mut file_writer);
-
-    let bar = ProgressBar::new(backup_file_size);
+    // Decompress backup file
+    let file = File::open(&backup)?;
+    let size = file.metadata()?.len();
+    let bar = ProgressBar::new(size);
     bar.set_style(
         ProgressStyle::with_template(
             "{msg} {bar:40.cyan/blue} {bytes}/{total_bytes} [{elapsed_precise}]",
@@ -66,17 +58,7 @@ fn main() -> io::Result<()> {
         .progress_chars("##-"),
     );
     bar.set_message("Decompressing");
-
-    let mut buf = [0u8; 8192];
-    loop {
-        let num_read = backup_reader.read(&mut buf)?;
-        if num_read == 0 {
-            break;
-        }
-        decompressed_file_writer.write_all(&buf[..num_read])?;
-        bar.inc(num_read as u64);
-    }
-
+    compression::decompress(file, &backup, |n| bar.inc(n))?;
     bar.finish();
 
     Ok(())
