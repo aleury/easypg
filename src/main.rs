@@ -1,64 +1,83 @@
-use std::io::{Read, Write};
-use std::process::Command;
+mod providers;
 
-fn main() -> std::io::Result<()> {
-    let backup_source = env!("BACKUP_SOURCE");
-    let backup_destination = env!("BACKUP_DESTINATION");
+use std::{
+    fs::File,
+    io::{self, BufReader, BufWriter, Read, Write},
+};
 
-    // Find the filename of latest dump
-    let ls_output = Command::new("aws")
-        .args(["s3", "ls", format!("{backup_source}/").as_str()])
-        .output()
-        .expect("failed to execute ls");
+use clap::{Parser, Subcommand, ValueEnum};
+use indicatif::{ProgressBar, ProgressStyle};
 
-    let ls_result = std::str::from_utf8(&ls_output.stdout).expect("failed convert stdout to str");
+use providers::{Local, Provider};
 
-    let latest_filename = ls_result
-        .lines()
-        .flat_map(|line| line.split_whitespace().last())
-        .last()
-        .expect("failed to find the latest backup");
-    println!("Latest backup is {latest_filename}. Downloading now...");
+#[derive(Parser, Debug)]
+#[clap(author, version, about, long_about = None)]
+struct Cli {
+    #[clap(subcommand)]
+    command: Commands,
+}
 
-    // Download the latest dump found
-    let mut cp_child = Command::new("aws")
-        .args([
-            "s3",
-            "cp",
-            format!("{backup_source}/{latest_filename}").as_str(),
-            format!("{backup_destination}/").as_str(),
-        ])
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .expect("failed to download backup");
-    let mut cp_stdout =
-        std::mem::take(&mut cp_child.stdout).expect("couldn't attach to downloader stdout");
+#[derive(Debug, Subcommand)]
+enum Commands {
+    /// Resets database using the latest backup obtained from the provider
+    Reset {
+        /// What provider to fetch the latest backup from
+        #[clap(short, long, arg_enum, default_value_t = StorageProvider::Local, value_parser)]
+        provider: StorageProvider,
+    },
+}
 
-    let mut buf = [0u8; 1024];
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+enum StorageProvider {
+    Local,
+}
+
+fn main() -> io::Result<()> {
+    let cli = Cli::parse();
+    let backup_src = env!("BACKUP_SOURCE");
+    let backup_dest = env!("BACKUP_DESTINATION");
+
+    let provider = match &cli.command {
+        Commands::Reset { provider } => match provider {
+            StorageProvider::Local => Local::new(backup_src, backup_dest),
+        },
+    };
+
+    let backup = provider
+        .get_latest_backup()
+        .expect("failed to get latest backup");
+    println!("Copied latest backup to {:?}", backup);
+
+    let backup_file = File::open(&backup)?;
+    let backup_file_size = backup_file.metadata()?.len();
+    let mut backup_reader = BufReader::new(backup_file);
+
+    let decompressed_filepath = backup.trim_end_matches(".gz");
+    let decompressed_file = File::create(decompressed_filepath)?;
+    let mut file_writer = BufWriter::new(decompressed_file);
+    let mut decompressed_file_writer = flate2::write::GzDecoder::new(&mut file_writer);
+
+    let bar = ProgressBar::new(backup_file_size);
+    bar.set_style(
+        ProgressStyle::with_template(
+            "{msg} {bar:40.cyan/blue} {bytes}/{total_bytes} [{elapsed_precise}]",
+        )
+        .unwrap()
+        .progress_chars("##-"),
+    );
+    bar.set_message("Decompressing");
+
+    let mut buf = [0u8; 8192];
     loop {
-        let num_read = cp_stdout.read(&mut buf)?;
+        let num_read = backup_reader.read(&mut buf)?;
         if num_read == 0 {
             break;
         }
-        let _ = std::io::stdout().write(&buf[..num_read])?;
+        decompressed_file_writer.write_all(&buf[..num_read])?;
+        bar.inc(num_read as u64);
     }
-    let ecode = cp_child.wait().expect("failed to wait on downloader");
-    assert!(ecode.success());
 
-    // Decompress backup: .db.gz -> .db
-    let mut gunzip_child = Command::new("gunzip")
-        .arg(format!("{backup_destination}/{latest_filename}"))
-        .spawn()
-        .expect("failed to decompress backup");
-    let ecode = gunzip_child
-        .wait()
-        .expect("failed to wait for decompression to finish");
-    assert!(ecode.success());
-
-    // Reset database
-    // 1. dropdb db_name
-    // 2. createdb -T template0 db_name
-    // 3. psql $DATABASE_URL < ./backups/backup.db
+    bar.finish();
 
     Ok(())
 }
