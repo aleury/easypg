@@ -18,13 +18,13 @@ enum Commands {
     /// Resets database using the latest backup obtained from the provider
     Reset {
         /// What provider to fetch the latest backup from
-        #[clap(short, long, arg_enum, default_value_t = StorageProvider::Local, value_parser)]
-        provider: StorageProvider,
+        #[clap(short, long, arg_enum, default_value_t = Providers::Local, value_parser)]
+        provider: Providers,
     },
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-enum StorageProvider {
+enum Providers {
     Local,
 }
 
@@ -35,7 +35,7 @@ fn main() -> io::Result<()> {
 
     let provider = match &cli.command {
         Commands::Reset { provider } => match provider {
-            StorageProvider::Local => Local::new(backup_src, backup_dest),
+            Providers::Local => Local::new(backup_src, backup_dest),
         },
     };
 
