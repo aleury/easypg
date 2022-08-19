@@ -1,12 +1,10 @@
-mod compression;
-mod providers;
-
 use std::{fs::File, io};
 
 use clap::{Parser, Subcommand, ValueEnum};
 use indicatif::{ProgressBar, ProgressStyle};
 
-use providers::{Local, Provider};
+use easypg::compression::decompress;
+use easypg::providers::{Local, Provider};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -58,7 +56,7 @@ fn main() -> io::Result<()> {
         .progress_chars("##-"),
     );
     bar.set_message("Decompressing");
-    compression::decompress(file, &backup, |n| bar.inc(n))?;
+    decompress(file, &backup, |n| bar.inc(n))?;
     bar.finish();
 
     Ok(())
